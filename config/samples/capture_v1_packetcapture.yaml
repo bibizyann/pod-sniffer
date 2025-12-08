@@ -1,0 +1,9 @@
+apiVersion: capture.io.github.bibizyann/v1
+kind: PacketCapture
+metadata:
+  labels:
+    app.kubernetes.io/name: pod-sniffer
+    app.kubernetes.io/managed-by: kustomize
+  name: packetcapture-sample
+spec:
+  # TODO(user): Add fields here

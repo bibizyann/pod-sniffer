@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- capture_v1_packetcapture.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
