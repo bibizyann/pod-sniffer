@@ -1,28 +1,17 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	capturev1 "github.com/bibizyann/pod-sniffer/api/v1"
 )
@@ -36,20 +25,80 @@ type PacketCaptureReconciler struct {
 // +kubebuilder:rbac:groups=capture.io.github.bibizyann,resources=packetcaptures,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=capture.io.github.bibizyann,resources=packetcaptures/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=capture.io.github.bibizyann,resources=packetcaptures/finalizers,verbs=update
-
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the PacketCapture object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.4/pkg/reconcile
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 func (r *PacketCaptureReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	packetCapture := &capturev1.PacketCapture{}
+	if err := r.Get(ctx, req.NamespacedName, packetCapture); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
 
-	// TODO(user): your logic here
+	logger := log.FromContext(ctx)
+
+	logger.V(1).Info("Получен заказ на дамп",
+		"Имя CR", req.NamespacedName,
+		"TargetSelector", packetCapture.Spec.TargetSelector)
+
+	podList := &corev1.PodList{}
+	selector, err := metav1.LabelSelectorAsSelector(packetCapture.Spec.TargetSelector)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get labels: %w", err)
+	}
+
+	listOptions := []client.ListOption{
+		client.InNamespace(packetCapture.Namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	}
+
+	if err = r.List(ctx, podList, listOptions...); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	if len(podList.Items) == 0 {
+		logger.Info("Целевые поды не найдены, ждем...")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	targetPod := podList.Items[0]
+	nodeName := targetPod.Spec.NodeName
+	if nodeName == "" {
+		logger.Info("Под еще не назначен на ноду, ждем...")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// TODO: решить что делать с дубликатами сниффера
+	snifferJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      packetCapture.Name + "-sniffer",
+			Namespace: packetCapture.Namespace,
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					NodeSelector: map[string]string{
+						"kubernetes.io/hostname": nodeName,
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers: []corev1.Container{
+						// TODO: add real image and command
+						{
+							Name:    "sniffer",
+							Image:   "nginx:latest",
+							Command: []string{"sleep", "3600"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctrl.SetControllerReference(packetCapture, snifferJob, r.Scheme)
+
+	if err := r.Create(ctx, snifferJob); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create sniffer-job: %w", err)
+	}
+
+	logger.Info("Successefully created pod-sniffer: %s", snifferJob.ObjectMeta.Name)
 
 	return ctrl.Result{}, nil
 }
@@ -60,4 +109,9 @@ func (r *PacketCaptureReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&capturev1.PacketCapture{}).
 		Named("packetcapture").
 		Complete(r)
+}
+
+func findNode(ctx context.Context, pod *corev1.Pod) *corev1.Node {
+
+	return &corev1.Node{}
 }

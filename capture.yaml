@@ -1,0 +1,10 @@
+apiVersion: capture.io.github.bibizyann/v1
+kind: PacketCapture
+metadata:
+  name: my-web-dump
+spec:
+  targetSelector:
+    matchLabels:
+      app: web-app
+  durationSeconds: 30
+  filterExpression: "tcp port 80"
