@@ -28,3 +28,13 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Игнорируем бинарники провайдеров
+.terraform/
+
+# Игнорируем состояние Terraform (там пароли и ключи!)
+*.tfstate
+*.tfstate.backup
+
+# Игнорируем файлы с переменными (где ты хранишь секреты)
+*.tfvars
